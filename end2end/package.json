@@ -1,0 +1,19 @@
+{
+  "name": "end2end",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {},
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@types/node": "^20.12.12",
+    "typescript": "^5.4.5"
+  },
+  "directories": {
+    "test": "tests"
+  },
+  "type": "commonjs"
+}
