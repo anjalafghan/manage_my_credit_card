@@ -109,8 +109,14 @@ pub async fn authenticate_user(
 }
 
 pub fn verify_token(token: &str) -> Result<Claims, String> {
-    let token_data = decode::<Claims>(token, &decoding_key(), &jwt_validation())
-        .map_err(|_e| "Token verification failed".to_string())?;
+    log::info!("verify_token: verifying token, len={}", token.len());
+
+    let token_data = decode::<Claims>(token, &decoding_key(), &jwt_validation()).map_err(|e| {
+        log::warn!("verify_token: JWT decode/validation error: {}", e);
+        format!("Token verification failed: {}", e)
+    })?;
+
+    log::info!("verify_token: success for sub={}", token_data.claims.sub);
 
     Ok(token_data.claims)
 }

@@ -198,44 +198,136 @@ fn RegisterPage() -> impl IntoView {
 
 #[component]
 fn DashboardPage() -> impl IntoView {
-    let user_info = Resource::new(|| (), |_| async move { get_user_info().await });
+    use leptos::prelude::*;
+
+    let (username, set_username) = signal(None::<String>);
+    let (error, set_error) = signal(None::<String>);
+
+    // --- existing spawn_local code stays the same ---
+
+    #[cfg(not(feature = "ssr"))]
+    {
+        use leptos::logging::log;
+        use leptos::web_sys;
+
+        let set_username_cloned = set_username.clone();
+        let set_error_cloned = set_error.clone();
+
+        leptos::task::spawn_local(async move {
+            log!("Dashboard: starting client-side user info fetch");
+
+            let token = {
+                let window = match web_sys::window() {
+                    Some(w) => w,
+                    None => {
+                        set_error_cloned.set(Some("No window object".to_string()));
+                        log!("Dashboard: No window object");
+                        return;
+                    }
+                };
+
+                let storage = match window.local_storage() {
+                    Ok(Some(s)) => s,
+                    Ok(None) => {
+                        set_error_cloned.set(Some("localStorage not available".to_string()));
+                        log!("Dashboard: localStorage not available");
+                        return;
+                    }
+                    Err(_) => {
+                        set_error_cloned.set(Some("Error accessing localStorage".to_string()));
+                        log!("Dashboard: error accessing localStorage");
+                        return;
+                    }
+                };
+
+                match storage.get_item("token") {
+                    Ok(Some(t)) => {
+                        log!("Dashboard: token read from localStorage, len={}", t.len());
+                        t
+                    }
+                    Ok(None) => {
+                        set_error_cloned.set(Some("No token in localStorage".to_string()));
+                        log!("Dashboard: no token in localStorage");
+                        return;
+                    }
+                    Err(_) => {
+                        set_error_cloned
+                            .set(Some("Failed to read token from localStorage".to_string()));
+                        log!("Dashboard: failed to read token");
+                        return;
+                    }
+                }
+            };
+
+            match get_user_info(token).await {
+                Ok(info) => {
+                    log!("Dashboard: get_user_info OK for user {}", info.username);
+                    set_username_cloned.set(Some(info.username));
+                }
+                Err(e) => {
+                    log!("Dashboard: get_user_info ERROR: {:?}", e);
+                    set_error_cloned.set(Some(format!("{e}")));
+                }
+            }
+        });
+    }
 
     view! {
         <div class="container">
             <div class="dashboard">
                 <h1>"Dashboard"</h1>
-                <Suspense fallback=move || view! { <p>"Loading..."</p> }>
-                    {move || Suspend::new(async move {
-                        match user_info.await {
-                            Ok(info) => view! {
-                                <div>
-                                    <p>"Welcome, " {info.username} "!"</p>
-                                    <button on:click=move |_| {
+
+                {move || {
+                    if let Some(name) = username.get() {
+                        // ✅ Loaded successfully
+                        view! {
+                            <div>
+                                <p>"Welcome, " {name} "!"</p>
+                                <p class="debug">"Debug: Dashboard loaded successfully."</p>
+                                <button on:click={
+                                    let set_username = set_username.clone();
+                                    let set_error = set_error.clone();
+                                    move |_| {
                                         #[cfg(not(feature = "ssr"))]
                                         {
+                                            use leptos::logging::log;
                                             use leptos::web_sys;
-                                            let window = web_sys::window().unwrap();
-                                            let storage = window.local_storage().unwrap().unwrap();
-                                            let _ = storage.remove_item("token");
-                                            let location = window.location();
-                                            let _ = location.set_href("/login");
+
+                                            log!("Dashboard: logout clicked, removing token & redirecting.");
+                                            if let Some(window) = web_sys::window() {
+                                                if let Ok(Some(storage)) = window.local_storage() {
+                                                    let _ = storage.remove_item("token");
+                                                }
+                                                // update local state (so if redirect fails, UI still reflects logout)
+                                                set_username.set(None);
+                                                set_error.set(Some("You have been logged out.".to_string()));
+
+                                                // redirect to login
+                                                let _ = window.location().set_href("/login");
+                                            }
                                         }
-                                    }>"Logout"</button>
-                                </div>
-                            }.into_any(),
-                            Err(_) => {
-                                #[cfg(not(feature = "ssr"))]
-                                {
-                                    use leptos::web_sys;
-                                    let window = web_sys::window().unwrap();
-                                    let location = window.location();
-                                    let _ = location.set_href("/login");
-                                }
-                                view! { <p>"Redirecting to login..."</p> }.into_any()
-                            }
-                        }
-                    })}
-                </Suspense>
+                                    }
+                                }>"Logout"</button>
+                            </div>
+                        }.into_any()
+                    } else if let Some(err) = error.get() {
+                        // ❌ Error state
+                        view! {
+                            <div class="error">
+                                <p>"Error loading user info."</p>
+                                <p>"Details: " {err}</p>
+                                <p class="debug">
+                                    "Debug: you can manually go to /login to log in again."
+                                </p>
+                            </div>
+                        }.into_any()
+                    } else {
+                        // ⏳ Loading state
+                        view! {
+                            <p>"Loading user info..."</p>
+                        }.into_any()
+                    }
+                }}
             </div>
         </div>
     }
@@ -286,27 +378,48 @@ pub async fn register(username: String, password: String) -> Result<(), ServerFn
 }
 
 #[server(GetUserInfo, "/api")]
-pub async fn get_user_info() -> Result<UserInfo, ServerFnError> {
+pub async fn get_user_info(token: String) -> Result<UserInfo, ServerFnError> {
     use crate::auth::verify_token;
-    use axum::http::HeaderMap;
-    use leptos_axum::extract;
 
-    let headers: HeaderMap = extract().await?;
+    log::info!("GetUserInfo: called with token length {}", token.len());
 
-    let token = headers
-        .get("Authorization")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "))
-        .ok_or_else(|| ServerFnError::new("No token provided"))?;
-
-    let claims = verify_token(token).map_err(|e| ServerFnError::new(e))?;
-
-    Ok(UserInfo {
-        username: claims.sub,
-    })
+    match verify_token(&token) {
+        Ok(claims) => {
+            log::info!("GetUserInfo: token valid for user {}", claims.sub);
+            Ok(UserInfo {
+                username: claims.sub,
+            })
+        }
+        Err(e) => {
+            log::warn!("GetUserInfo: verify_token failed: {}", e);
+            Err(ServerFnError::new(e))
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct UserInfo {
     pub username: String,
+}
+
+#[cfg(not(feature = "ssr"))]
+pub fn logout() {
+    use leptos::logging::log;
+    use leptos::web_sys;
+
+    log!("Auth: logout called, removing token and redirecting to /login");
+
+    if let Some(window) = web_sys::window() {
+        if let Ok(Some(storage)) = window.local_storage() {
+            let _ = storage.remove_item("token");
+        }
+
+        // Redirect to login page
+        let _ = window.location().set_href("/login");
+    }
+}
+
+#[cfg(feature = "ssr")]
+pub fn logout() {
+    // No-op on server
 }
