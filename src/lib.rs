@@ -31,14 +31,31 @@ pub fn App() -> impl IntoView {
         <Title text="Leptos Auth Demo"/>
 
         <Router>
-            <main>
-                <Routes fallback=|| "Page not found".into_view()>
-                    <Route path=StaticSegment("") view=HomePage/>
-                    <Route path=StaticSegment("login") view=LoginPage/>
-                    <Route path=StaticSegment("register") view=RegisterPage/>
-                    <Route path=StaticSegment("dashboard") view=DashboardPage/>
-                </Routes>
-            </main>
+            <div class="app-root">
+                <header class="app-header">
+                    <a href="/" class="brand">
+                        <span class="brand-logo">"LC"</span>
+                        <span class="brand-text">
+                            <span class="brand-title">"Leptos Auth"</span>
+                            <span class="brand-subtitle">"Secure demo dashboard"</span>
+                        </span>
+                    </a>
+
+                    <nav class="app-nav">
+                        <a href="/login" class="nav-link">"Login"</a>
+                        <a href="/register" class="nav-link nav-link--primary">"Register"</a>
+                    </nav>
+                </header>
+
+                <main class="app-main">
+                    <Routes fallback=|| "Page not found".into_view()>
+                        <Route path=StaticSegment("") view=HomePage/>
+                        <Route path=StaticSegment("login") view=LoginPage/>
+                        <Route path=StaticSegment("register") view=RegisterPage/>
+                        <Route path=StaticSegment("dashboard") view=DashboardPage/>
+                    </Routes>
+                </main>
+            </div>
         </Router>
     }
 }
@@ -46,12 +63,34 @@ pub fn App() -> impl IntoView {
 #[component]
 fn HomePage() -> impl IntoView {
     view! {
-        <div class="container">
-            <h1>"Welcome to Leptos Auth Demo"</h1>
-            <div class="links">
-                <a href="/login">"Login"</a>
-                <a href="/register">"Register"</a>
-            </div>
+        <div class="page page--center">
+            <section class="hero">
+                <div class="hero-copy">
+                    <p class="eyebrow">"Manage My Credit Card"</p>
+                    <h1>"Modern auth demo, built with Leptos & Axum"</h1>
+                    <p class="hero-subtitle">
+                        "Sign in to explore a minimal, production-style auth flow with a polished UI."
+                    </p>
+
+                    <div class="hero-actions">
+                        <a href="/login" class="btn btn-primary">"Login"</a>
+                        <a href="/register" class="btn btn-ghost">"Create account"</a>
+                    </div>
+                </div>
+
+                <div class="hero-card glass-card">
+                    <p class="hero-card-label">"Quick peek"</p>
+                    <p class="hero-card-title">"JWT-secured dashboard"</p>
+                    <p class="hero-card-body">
+                        "Client-side token storage, protected API calls, and a clean starter layout."
+                    </p>
+                    <ul class="hero-list">
+                        <li>"• Email / username + password auth"</li>
+                        <li>"• Token-based dashboard access"</li>
+                        <li>"• Error & loading states"</li>
+                    </ul>
+                </div>
+            </section>
         </div>
     }
 }
@@ -185,28 +224,50 @@ fn LoginPage() -> impl IntoView {
     };
 
     view! {
-        <div class="container">
-            <div class="form-container">
-                <h1>"Login"</h1>
-                {move || error.get().map(|e| view! { <div class="error">{e}</div> })}
-                <form on:submit=on_submit>
-                    <input
-                        type="text"
-                        placeholder="Username"
-                        on:input=move |ev| set_username.set(event_target_value(&ev))
-                        prop:value=move || username.get()
-                    />
-                    <input
-                        type="password"
-                        placeholder="Password"
-                        on:input=move |ev| set_password.set(event_target_value(&ev))
-                        prop:value=move || password.get()
-                    />
-                    <button type="submit" disabled=move || loading.get()>
-                        {move || if loading.get() { "Loading..." } else { "Login" }}
+        <div class="page page--center">
+            <div class="auth-card glass-card">
+                <h1>"Welcome back"</h1>
+                <p class="auth-subtitle">
+                    "Sign in to access your dashboard and manage your account."
+                </p>
+
+                {move || error.get().map(|e| view! { <div class="alert alert-error">{e}</div> })}
+
+                <form on:submit=on_submit class="form">
+                    <label class="field">
+                        <span class="field-label">"Username"</span>
+                        <input
+                            type="text"
+                            placeholder="Enter your username"
+                            on:input=move |ev| set_username.set(event_target_value(&ev))
+                            prop:value=move || username.get()
+                        />
+                    </label>
+
+                    <label class="field">
+                        <span class="field-label">"Password"</span>
+                        <input
+                            type="password"
+                            placeholder="••••••••"
+                            on:input=move |ev| set_password.set(event_target_value(&ev))
+                            prop:value=move || password.get()
+                        />
+                    </label>
+
+                    <button
+                        type="submit"
+                        class="btn btn-primary btn-full"
+                        class:btn-loading=move || loading.get()
+                        disabled=move || loading.get()
+                    >
+                        {move || if loading.get() { "Logging in..." } else { "Login" }}
                     </button>
                 </form>
-                <p>"Don't have an account? " <a href="/register">"Register"</a></p>
+
+                <p class="auth-footer">
+                    "Don't have an account? "
+                    <a href="/register">"Register"</a>
+                </p>
             </div>
         </div>
     }
@@ -255,28 +316,50 @@ fn RegisterPage() -> impl IntoView {
     };
 
     view! {
-        <div class="container">
-            <div class="form-container">
-                <h1>"Register"</h1>
-                {move || error.get().map(|e| view! { <div class="error">{e}</div> })}
-                <form on:submit=on_submit>
-                    <input
-                        type="text"
-                        placeholder="Username"
-                        on:input=move |ev| set_username.set(event_target_value(&ev))
-                        prop:value=move || username.get()
-                    />
-                    <input
-                        type="password"
-                        placeholder="Password"
-                        on:input=move |ev| set_password.set(event_target_value(&ev))
-                        prop:value=move || password.get()
-                    />
-                    <button type="submit" disabled=move || loading.get()>
-                        {move || if loading.get() { "Loading..." } else { "Register" }}
+        <div class="page page--center">
+            <div class="auth-card glass-card">
+                <h1>"Create your account"</h1>
+                <p class="auth-subtitle">
+                    "A simple starter auth flow you can extend and customize."
+                </p>
+
+                {move || error.get().map(|e| view! { <div class="alert alert-error">{e}</div> })}
+
+                <form on:submit=on_submit class="form">
+                    <label class="field">
+                        <span class="field-label">"Username"</span>
+                        <input
+                            type="text"
+                            placeholder="Choose a username"
+                            on:input=move |ev| set_username.set(event_target_value(&ev))
+                            prop:value=move || username.get()
+                        />
+                    </label>
+
+                    <label class="field">
+                        <span class="field-label">"Password"</span>
+                        <input
+                            type="password"
+                            placeholder="Create a secure password"
+                            on:input=move |ev| set_password.set(event_target_value(&ev))
+                            prop:value=move || password.get()
+                        />
+                    </label>
+
+                    <button
+                        type="submit"
+                        class="btn btn-primary btn-full"
+                        class:btn-loading=move || loading.get()
+                        disabled=move || loading.get()
+                    >
+                        {move || if loading.get() { "Creating account..." } else { "Register" }}
                     </button>
                 </form>
-                <p>"Already have an account? " <a href="/login">"Login"</a></p>
+
+                <p class="auth-footer">
+                    "Already have an account? "
+                    <a href="/login">"Login"</a>
+                </p>
             </div>
         </div>
     }
@@ -291,7 +374,11 @@ fn DashboardPage() -> impl IntoView {
     let (username, set_username) = signal(None::<String>);
     let (error, set_error) = signal(None::<String>);
 
-    // Client-side: fetch user info using token from localStorage
+    // UI state (purely client-side visual state)
+    let (selected_tab, set_selected_tab) = signal("app".to_owned());
+    let (show_recent, set_show_recent) = signal(false);
+    let (fast_refresh, set_fast_refresh) = signal(true);
+
     #[cfg(not(feature = "ssr"))]
     {
         use leptos::logging::log;
@@ -325,42 +412,149 @@ fn DashboardPage() -> impl IntoView {
     }
 
     view! {
-        <div class="container">
-            <div class="dashboard">
-                <h1>"Dashboard"</h1>
+        <div class="page page--center">
+            <div class="dashboard-shell">
 
-                {move || {
-                    if let Some(name) = username.get() {
-                        // ✅ Loaded successfully
-                        view! {
-                            <div>
-                                <p>"Welcome, " {name} "!"</p>
-                                <button on:click={
-                                    let set_username = set_username.clone();
-                                    let set_error = set_error.clone();
-                                    move |_| {
-                                        set_username.set(None);
-                                        set_error.set(Some("You have been logged out.".to_string()));
-                                        logout();
-                                    }
-                                }>"Logout"</button>
+                // Top line: title + user + logout
+                <div class="dashboard-shell-header">
+                    <div class="dash-title-block">
+                        <p class="dash-eyebrow">"Control panel"</p>
+                        <h1 class="dash-title">"App settings"</h1>
+                        {move || username.get().map(|name| view! {
+                            <p class="dash-subtitle">
+                                "Signed in as " <span class="dash-username">{name}</span>
+                            </p>
+                        })}
+                    </div>
+
+                    <button
+                        class="btn btn-ghost btn-sm dash-logout"
+                        on:click={
+                            let set_username = set_username.clone();
+                            let set_error = set_error.clone();
+                            move |_| {
+                                set_username.set(None);
+                                set_error.set(Some("You have been logged out.".to_string()));
+                                logout();
+                            }
+                        }
+                    >
+                        "Logout"
+                    </button>
+                </div>
+
+                // Main dark control card
+                <div class="settings-card">
+
+                    // Segmented tabs (App / Database)
+                    <div class="segmented">
+                        <button
+                            class="segment"
+                            class:segment--active=move || selected_tab.get() == "app"
+                            on:click=move |_| set_selected_tab.set("app".to_owned())
+                        >
+                            <span class="segment-icon">"▢"</span>
+                            <span>"App"</span>
+                        </button>
+
+                        <button
+                            class="segment"
+                            class:segment--active=move || selected_tab.get() == "db"
+                            on:click=move |_| set_selected_tab.set("db".to_owned())
+                        >
+                            <span class="segment-icon">"◎"</span>
+                            <span>"Database"</span>
+                        </button>
+                    </div>
+
+                    <div class="settings-body">
+                        // App usage
+                        <div class="settings-row">
+                            <div class="settings-label">
+                                <span class="settings-label-main">"App usage"</span>
                             </div>
-                        }.into_any()
-                    } else if let Some(err) = error.get() {
-                        // ❌ Error state
-                        view! {
-                            <div class="error">
-                                <p>"Error loading user info."</p>
-                                <p>"Details: " {err}</p>
+                            <button class="select">
+                                <span>"All"</span>
+                                <span class="select-chevron">"▾"</span>
+                            </button>
+                        </div>
+
+                        // Sort by
+                        <div class="settings-row">
+                            <div class="settings-label">
+                                <span class="settings-label-main">"Sort by"</span>
                             </div>
-                        }.into_any()
-                    } else {
-                        // ⏳ Loading state (initial SSR + early client)
-                        view! {
-                            <p>"Loading user info..."</p>
-                        }.into_any()
-                    }
-                }}
+                            <button class="select">
+                                <span>"Priority"</span>
+                                <span class="select-chevron">"▾"</span>
+                            </button>
+                        </div>
+
+                        // Show recent activity (toggle OFF)
+                        <div class="settings-row">
+                            <div class="settings-label">
+                                <span class="settings-label-main">"Show recent activity"</span>
+                            </div>
+                            <button
+                                class="toggle"
+                                class:toggle--on=move || show_recent.get()
+                                on:click=move |_| set_show_recent.update(|v| *v = !*v)
+                            >
+                                <span class="toggle-thumb"></span>
+                            </button>
+                        </div>
+
+                        // Fast refresh (toggle ON)
+                        <div class="settings-row">
+                            <div class="settings-label">
+                                <span class="settings-label-main">"Fast refresh enabled"</span>
+                            </div>
+                            <button
+                                class="toggle"
+                                class:toggle--on=move || fast_refresh.get()
+                                on:click=move |_| set_fast_refresh.update(|v| *v = !*v)
+                            >
+                                <span class="toggle-thumb"></span>
+                            </button>
+                        </div>
+
+                        // Max refresh limit (dropdown)
+                        <div class="settings-row">
+                            <div class="settings-label">
+                                <span class="settings-label-main">"Max refresh limit"</span>
+                            </div>
+                            <button class="select">
+                                <span>"10 Secs"</span>
+                                <span class="select-chevron">"▾"</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    // Error / loading info (tiny text at bottom)
+                    <div class="settings-footer">
+                        {move || {
+                            if let Some(err) = error.get() {
+                                view! {
+                                    <span class="settings-status settings-status--error">
+                                        {err}
+                                    </span>
+                                }.into_any()
+                            } else if username.get().is_none() {
+                                view! {
+                                    <span class="settings-status">
+                                        "Loading user info..."
+                                    </span>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <span class="settings-status settings-status--ok">
+                                        "All systems nominal · Visual demo only"
+                                    </span>
+                                }.into_any()
+                            }
+                        }}
+                    </div>
+                </div>
             </div>
         </div>
     }
