@@ -371,45 +371,250 @@ fn RegisterPage() -> impl IntoView {
 
 #[component]
 fn DashboardPage() -> impl IntoView {
-    let (username, set_username) = signal(None::<String>);
-    let (error, set_error) = signal(None::<String>);
+    use crate::{CreditCard, UserCards};
+    use leptos::logging::log;
 
-    // UI state (purely client-side visual state)
-    let (selected_tab, set_selected_tab) = signal("app".to_owned());
-    let (show_recent, set_show_recent) = signal(false);
-    let (fast_refresh, set_fast_refresh) = signal(true);
+    let (username, set_username) = signal(None::<String>);
+    let (token, set_token) = signal(None::<String>);
+    let (cards, set_cards) = signal(Vec::<CreditCard>::new());
+    let (error, set_error) = signal(None::<String>);
+    let (loading, set_loading) = signal(true);
+
+    // Form state for create / edit
+    let (editing_id, set_editing_id) = signal(None::<i64>);
+    let (brand, set_brand) = signal(String::new());
+    let (last4, set_last4) = signal(String::new());
+    let (credit_limit, set_credit_limit) = signal(String::new());
+    let (current_balance, set_current_balance) = signal(String::new());
+    let (nickname, set_nickname) = signal(String::new());
+    let (saving, set_saving) = signal(false);
 
     #[cfg(not(feature = "ssr"))]
     {
-        use leptos::logging::log;
+        use leptos::task::spawn_local;
 
-        let set_username = set_username.clone();
-        let set_error = set_error.clone();
+        // Initial load: read token, fetch user + cards
+        spawn_local({
+            let set_username = set_username.clone();
+            let set_token = set_token.clone();
+            let set_cards = set_cards.clone();
+            let set_error = set_error.clone();
+            let set_loading = set_loading.clone();
 
-        leptos::task::spawn_local(async move {
-            log!("Dashboard: starting client-side user info fetch");
+            async move {
+                log!("Dashboard: starting client-side user + cards fetch");
 
-            let token = match read_token_from_local_storage() {
-                Ok(t) => t,
-                Err(msg) => {
-                    log!("Dashboard: token error: {}", msg);
-                    set_error.set(Some(msg));
-                    return;
+                let token_val = match read_token_from_local_storage() {
+                    Ok(t) => t,
+                    Err(msg) => {
+                        log!("Dashboard: token error: {}", msg);
+                        set_error.set(Some(msg));
+                        set_loading.set(false);
+                        return;
+                    }
+                };
+
+                set_token.set(Some(token_val.clone()));
+
+                match get_user_cards(token_val).await {
+                    Ok(UserCards { username, cards }) => {
+                        log!(
+                            "Dashboard: get_user_cards OK for user {}, {} cards",
+                            username,
+                            cards.len()
+                        );
+                        set_username.set(Some(username));
+                        set_cards.set(cards);
+                        set_error.set(None);
+                    }
+                    Err(e) => {
+                        log!("Dashboard: get_user_cards ERROR: {:?}", e);
+                        set_error.set(Some(format!("{e}")));
+                    }
                 }
-            };
 
-            match get_user_info(token).await {
-                Ok(info) => {
-                    log!("Dashboard: get_user_info OK for user {}", info.username);
-                    set_username.set(Some(info.username));
-                }
-                Err(e) => {
-                    log!("Dashboard: get_user_info ERROR: {:?}", e);
-                    set_error.set(Some(format!("{e}")));
-                }
+                set_loading.set(false);
             }
         });
     }
+
+    // Helper: reset form for "new card"
+    let reset_form_for_new = {
+        let set_editing_id = set_editing_id.clone();
+        let set_brand = set_brand.clone();
+        let set_last4 = set_last4.clone();
+        let set_credit_limit = set_credit_limit.clone();
+        let set_current_balance = set_current_balance.clone();
+        let set_nickname = set_nickname.clone();
+
+        move || {
+            set_editing_id.set(None);
+            set_brand.set(String::new());
+            set_last4.set(String::new());
+            set_credit_limit.set(String::new());
+            set_current_balance.set("0".to_string());
+            set_nickname.set(String::new());
+        }
+    };
+
+    // Helper: populate form for editing an existing card
+    let start_edit_card = {
+        let set_editing_id = set_editing_id.clone();
+        let set_brand = set_brand.clone();
+        let set_last4 = set_last4.clone();
+        let set_credit_limit = set_credit_limit.clone();
+        let set_current_balance = set_current_balance.clone();
+        let set_nickname = set_nickname.clone();
+
+        move |card: CreditCard| {
+            set_editing_id.set(Some(card.id));
+            set_brand.set(card.brand);
+            set_last4.set(card.last4);
+            set_credit_limit.set(card.credit_limit.to_string());
+            set_current_balance.set(card.current_balance.to_string());
+            set_nickname.set(card.nickname.unwrap_or_default());
+        }
+    };
+
+    // Save handler (create or update depending on editing_id)
+    let on_save = {
+        let token = token.clone();
+        let cards = cards.clone();
+        let set_cards = set_cards.clone();
+        let set_error = set_error.clone();
+        let set_saving = set_saving.clone();
+        let editing_id = editing_id.clone();
+        let brand = brand.clone();
+        let last4 = last4.clone();
+        let credit_limit = credit_limit.clone();
+        let current_balance = current_balance.clone();
+        let nickname = nickname.clone();
+        let reset_form_for_new = reset_form_for_new.clone();
+
+        move |ev: web_sys::SubmitEvent| {
+            ev.prevent_default();
+
+            #[cfg(not(feature = "ssr"))]
+            {
+                use leptos::task::spawn_local;
+
+                if token.get().is_none() {
+                    set_error.set(Some("No auth token found.".to_string()));
+                    return;
+                }
+
+                set_saving.set(true);
+                set_error.set(None);
+
+                let token_val = token.get().unwrap();
+                let editing_id_val = editing_id.get();
+                let brand_val = brand.get();
+                let last4_val = last4.get();
+                let limit_val = credit_limit.get();
+                let balance_val = current_balance.get();
+                let nickname_val = nickname.get();
+                let set_cards = set_cards.clone();
+                let cards = cards.clone();
+                let set_error = set_error.clone();
+                let set_saving = set_saving.clone();
+                let reset_form_for_new = reset_form_for_new.clone();
+
+                spawn_local(async move {
+                    let credit_limit_i64 = limit_val.parse::<i64>().unwrap_or(0);
+                    let current_balance_i64 = balance_val.parse::<i64>().unwrap_or(0);
+                    let nickname_opt = if nickname_val.trim().is_empty() {
+                        None
+                    } else {
+                        Some(nickname_val.clone())
+                    };
+
+                    let result = if let Some(id) = editing_id_val {
+                        update_card(
+                            token_val.clone(),
+                            id,
+                            brand_val.clone(),
+                            last4_val.clone(),
+                            credit_limit_i64,
+                            current_balance_i64,
+                            nickname_opt.clone(),
+                        )
+                        .await
+                    } else {
+                        create_card(
+                            token_val.clone(),
+                            brand_val.clone(),
+                            last4_val.clone(),
+                            credit_limit_i64,
+                            nickname_opt.clone(),
+                        )
+                        .await
+                    };
+
+                    match result {
+                        Ok(card) => {
+                            // Merge into local state
+                            if let Some(id) = editing_id_val {
+                                // update existing
+                                set_cards.update(|list| {
+                                    if let Some(pos) = list.iter().position(|c| c.id == id) {
+                                        list[pos] = card.clone();
+                                    }
+                                });
+                            } else {
+                                // push new
+                                set_cards.update(|list| list.push(card));
+                            }
+
+                            reset_form_for_new();
+                        }
+                        Err(e) => {
+                            set_error.set(Some(format!("Save failed: {e}")));
+                        }
+                    }
+
+                    set_saving.set(false);
+                });
+            }
+        }
+    };
+
+    // Delete handler
+    let delete_card_action = {
+        let token = token.clone();
+        let set_cards = set_cards.clone();
+        let cards = cards.clone();
+        let set_error = set_error.clone();
+
+        move |id: i64| {
+            #[cfg(not(feature = "ssr"))]
+            {
+                use leptos::task::spawn_local;
+
+                if token.get().is_none() {
+                    set_error.set(Some("No auth token found.".to_string()));
+                    return;
+                }
+
+                let token_val = token.get().unwrap();
+                let set_cards = set_cards.clone();
+                let cards = cards.clone();
+                let set_error = set_error.clone();
+
+                spawn_local(async move {
+                    match delete_card(token_val.clone(), id).await {
+                        Ok(_) => {
+                            set_cards.update(|list| {
+                                list.retain(|c| c.id != id);
+                            });
+                        }
+                        Err(e) => {
+                            set_error.set(Some(format!("Delete failed: {e}")));
+                        }
+                    }
+                });
+            }
+        }
+    };
 
     view! {
         <div class="page page--center">
@@ -418,8 +623,8 @@ fn DashboardPage() -> impl IntoView {
                 // Top line: title + user + logout
                 <div class="dashboard-shell-header">
                     <div class="dash-title-block">
-                        <p class="dash-eyebrow">"Control panel"</p>
-                        <h1 class="dash-title">"App settings"</h1>
+                        <p class="dash-eyebrow">"My cards"</p>
+                        <h1 class="dash-title">"Credit cards"</h1>
                         {move || username.get().map(|name| view! {
                             <p class="dash-subtitle">
                                 "Signed in as " <span class="dash-username">{name}</span>
@@ -443,121 +648,302 @@ fn DashboardPage() -> impl IntoView {
                     </button>
                 </div>
 
-                // Main dark control card
+                // Main card: head with form + list of cards
                 <div class="settings-card">
 
-                    // Segmented tabs (App / Database)
-                    <div class="segmented">
-                        <button
-                            class="segment"
-                            class:segment--active=move || selected_tab.get() == "app"
-                            on:click=move |_| set_selected_tab.set("app".to_owned())
-                        >
-                            <span class="segment-icon">"▢"</span>
-                            <span>"App"</span>
-                        </button>
+                    // Head: Add / Edit form
+                    <div class="cards-head">
+                        <div class="cards-head-title">
+                            <h2>"Manage cards"</h2>
+                            <p>"Create, update or remove your saved credit cards."</p>
+                        </div>
 
-                        <button
-                            class="segment"
-                            class:segment--active=move || selected_tab.get() == "db"
-                            on:click=move |_| set_selected_tab.set("db".to_owned())
-                        >
-                            <span class="segment-icon">"◎"</span>
-                            <span>"Database"</span>
-                        </button>
+                        <form class="cards-form" on:submit=on_save>
+                            <div class="cards-form-row">
+                                <label class="field">
+                                    <span class="field-label">"Brand"</span>
+                                    <input
+                                        type="text"
+                                        placeholder="e.g. HDFC, SBI, Axis"
+                                        prop:value=move || brand.get()
+                                        on:input=move |ev| set_brand.set(event_target_value(&ev))
+                                    />
+                                </label>
+
+                                <label class="field">
+                                    <span class="field-label">"Last 4 digits"</span>
+                                    <input
+                                        type="text"
+                                        maxlength="4"
+                                        placeholder="1234"
+                                        prop:value=move || last4.get()
+                                        on:input=move |ev| set_last4.set(event_target_value(&ev))
+                                    />
+                                </label>
+                            </div>
+
+                            <div class="cards-form-row">
+                                <label class="field">
+                                    <span class="field-label">"Credit limit"</span>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        placeholder="100000"
+                                        prop:value=move || credit_limit.get()
+                                        on:input=move |ev| set_credit_limit.set(event_target_value(&ev))
+                                    />
+                                </label>
+
+                                <label class="field">
+                                    <span class="field-label">"Current balance"</span>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        placeholder="0"
+                                        prop:value=move || current_balance.get()
+                                        on:input=move |ev| set_current_balance.set(event_target_value(&ev))
+                                    />
+                                </label>
+                            </div>
+
+                            <div class="cards-form-row">
+                                <label class="field">
+                                    <span class="field-label">"Nickname (optional)"</span>
+                                    <input
+                                        type="text"
+                                        placeholder="e.g. Travel card"
+                                        prop:value=move || nickname.get()
+                                        on:input=move |ev| set_nickname.set(event_target_value(&ev))
+                                    />
+                                </label>
+
+                                <div class="cards-form-actions">
+                                    <button
+                                        type="button"
+                                        class="btn btn-ghost btn-sm"
+                                        on:click=move |_| reset_form_for_new()
+                                    >
+                                        "New card"
+                                    </button>
+
+                                    <button
+                                        type="submit"
+                                        class="btn btn-primary btn-sm"
+                                        class:btn-loading=move || saving.get()
+                                        disabled=move || saving.get()
+                                    >
+                                        {move || {
+                                            if editing_id.get().is_some() {
+                                                if saving.get() { "Saving..." } else { "Update card" }
+                                            } else {
+                                                if saving.get() { "Saving..." } else { "Add card" }
+                                            }
+                                        }}
+                                    </button>
+                                </div>
+                            </div>
+                        </form>
                     </div>
 
-                    <div class="settings-body">
-                        // App usage
-                        <div class="settings-row">
-                            <div class="settings-label">
-                                <span class="settings-label-main">"App usage"</span>
-                            </div>
-                            <button class="select">
-                                <span>"All"</span>
-                                <span class="select-chevron">"▾"</span>
-                            </button>
-                        </div>
-
-                        // Sort by
-                        <div class="settings-row">
-                            <div class="settings-label">
-                                <span class="settings-label-main">"Sort by"</span>
-                            </div>
-                            <button class="select">
-                                <span>"Priority"</span>
-                                <span class="select-chevron">"▾"</span>
-                            </button>
-                        </div>
-
-                        // Show recent activity (toggle OFF)
-                        <div class="settings-row">
-                            <div class="settings-label">
-                                <span class="settings-label-main">"Show recent activity"</span>
-                            </div>
-                            <button
-                                class="toggle"
-                                class:toggle--on=move || show_recent.get()
-                                on:click=move |_| set_show_recent.update(|v| *v = !*v)
-                            >
-                                <span class="toggle-thumb"></span>
-                            </button>
-                        </div>
-
-                        // Fast refresh (toggle ON)
-                        <div class="settings-row">
-                            <div class="settings-label">
-                                <span class="settings-label-main">"Fast refresh enabled"</span>
-                            </div>
-                            <button
-                                class="toggle"
-                                class:toggle--on=move || fast_refresh.get()
-                                on:click=move |_| set_fast_refresh.update(|v| *v = !*v)
-                            >
-                                <span class="toggle-thumb"></span>
-                            </button>
-                        </div>
-
-                        // Max refresh limit (dropdown)
-                        <div class="settings-row">
-                            <div class="settings-label">
-                                <span class="settings-label-main">"Max refresh limit"</span>
-                            </div>
-                            <button class="select">
-                                <span>"10 Secs"</span>
-                                <span class="select-chevron">"▾"</span>
-                            </button>
-                        </div>
-                    </div>
-
-                    // Error / loading info (tiny text at bottom)
-                    <div class="settings-footer">
+                    // Body: list of cards
+                    <div class="cards-list">
                         {move || {
                             if let Some(err) = error.get() {
                                 view! {
-                                    <span class="settings-status settings-status--error">
-                                        {err}
-                                    </span>
+                                    <div class="alert alert-error">{err}</div>
                                 }.into_any()
-                            } else if username.get().is_none() {
+                            } else if loading.get() {
                                 view! {
-                                    <span class="settings-status">
-                                        "Loading user info..."
-                                    </span>
+                                    <p class="settings-status">"Loading your cards..."</p>
+                                }.into_any()
+                            } else if cards.get().is_empty() {
+                                view! {
+                                    <p class="settings-status">
+                                        "No cards yet. Add your first card using the form above."
+                                    </p>
                                 }.into_any()
                             } else {
                                 view! {
-                                    <span class="settings-status settings-status--ok">
-                                        "All systems nominal · Visual demo only"
-                                    </span>
+                                    <ul class="cards-grid">
+                                        <For
+                                            each=move || cards.get()
+                                            key=|c| c.id
+                                            let:card
+                                        >
+                                            <li class="card-tile">
+                                                <div class="card-tile-header">
+                                                    <div>
+                                                        <p class="card-tile-title">
+                                                            {card.nickname.clone().unwrap_or_else(|| card.brand.clone())}
+                                                        </p>
+                                                        <p class="card-tile-subtitle">
+                                                            {card.brand.clone()} " • •••• " {card.last4.clone()}
+                                                        </p>
+                                                    </div>
+                                                    <div class="card-tile-actions">
+                                                        <button
+                                                            class="btn btn-ghost btn-xs"
+                                                            on:click={
+                                                                let card = card.clone();
+                                                                move |_| start_edit_card(card.clone())
+                                                            }
+                                                        >
+                                                            "Edit"
+                                                        </button>
+                                                        <button
+                                                            class="btn btn-ghost btn-xs btn-danger"
+                                                            on:click={
+                                                                let id = card.id;
+                                                                move |_| delete_card_action(id)
+                                                            }
+                                                        >
+                                                            "Delete"
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                <div class="card-tile-body">
+                                                    <p>
+                                                        <span class="card-tile-label">"Limit"</span>
+                                                        <span class="card-tile-value">{"₹"}{card.credit_limit}</span>
+                                                    </p>
+                                                    <p>
+                                                        <span class="card-tile-label">"Balance"</span>
+                                                        <span class="card-tile-value">{"₹"}{card.current_balance}</span>
+                                                    </p>
+                                                </div>
+                                            </li>
+                                        </For>
+                                    </ul>
                                 }.into_any()
                             }
                         }}
+                    </div>
+
+                    // Tiny footer text
+                    <div class="settings-footer">
+                        <span class="settings-status settings-status--ok">
+                            "Data is loaded from your database · JWT protected"
+                        </span>
                     </div>
                 </div>
             </div>
         </div>
     }
+}
+
+//
+// ───────────────────── Cards server functions ─────────────────────
+//
+
+#[server(GetUserCards, "/api")]
+pub async fn get_user_cards(token: String) -> Result<UserCards, ServerFnError> {
+    use crate::auth::verify_token;
+    use crate::db::{get_db_pool, list_cards_for_user};
+
+    log::info!(
+        "GetUserCards: called, token length {}, will verify & load cards",
+        token.len()
+    );
+
+    let claims =
+        verify_token(&token).map_err(|e| ServerFnError::new(format!("Auth error: {e}")))?;
+
+    let pool = get_db_pool()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Database error: {e}")))?;
+
+    let cards_db = list_cards_for_user(&pool, &claims.sub)
+        .await
+        .map_err(|e| ServerFnError::new(format!("Failed to load cards: {e}")))?;
+
+    // Convert Vec<db::CreditCard> -> Vec<CreditCard>
+    let cards = cards_db.into_iter().map(CreditCard::from).collect();
+
+    Ok(UserCards {
+        username: claims.sub,
+        cards,
+    })
+}
+
+#[server(CreateCard, "/api")]
+pub async fn create_card(
+    token: String,
+    brand: String,
+    last4: String,
+    credit_limit: i64,
+    nickname: Option<String>,
+) -> Result<CreditCard, ServerFnError> {
+    use crate::auth::verify_token;
+    use crate::db::{get_db_pool, insert_card_for_user};
+
+    let claims =
+        verify_token(&token).map_err(|e| ServerFnError::new(format!("Auth error: {e}")))?;
+
+    let pool = get_db_pool()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Database error: {e}")))?;
+
+    let card_db = insert_card_for_user(&pool, &claims.sub, &brand, &last4, credit_limit, nickname)
+        .await
+        .map_err(|e| ServerFnError::new(format!("Failed to create card: {e}")))?;
+
+    Ok(CreditCard::from(card_db))
+}
+
+#[server(UpdateCard, "/api")]
+pub async fn update_card(
+    token: String,
+    id: i64,
+    brand: String,
+    last4: String,
+    credit_limit: i64,
+    current_balance: i64,
+    nickname: Option<String>,
+) -> Result<CreditCard, ServerFnError> {
+    use crate::auth::verify_token;
+    use crate::db::{get_db_pool, update_card_for_user};
+
+    let claims =
+        verify_token(&token).map_err(|e| ServerFnError::new(format!("Auth error: {e}")))?;
+
+    let pool = get_db_pool()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Database error: {e}")))?;
+
+    let card_db = update_card_for_user(
+        &pool,
+        &claims.sub,
+        id,
+        &brand,
+        &last4,
+        credit_limit,
+        current_balance,
+        nickname,
+    )
+    .await
+    .map_err(|e| ServerFnError::new(format!("Failed to update card: {e}")))?;
+
+    Ok(CreditCard::from(card_db))
+}
+
+#[server(DeleteCard, "/api")]
+pub async fn delete_card(token: String, id: i64) -> Result<(), ServerFnError> {
+    use crate::auth::verify_token;
+    use crate::db::{delete_card_for_user, get_db_pool};
+
+    let claims =
+        verify_token(&token).map_err(|e| ServerFnError::new(format!("Auth error: {e}")))?;
+
+    let pool = get_db_pool()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Database error: {e}")))?;
+
+    delete_card_for_user(&pool, &claims.sub, id)
+        .await
+        .map_err(|e| ServerFnError::new(format!("Failed to delete card: {e}")))?;
+
+    Ok(())
 }
 
 //
@@ -631,4 +1017,34 @@ pub async fn get_user_info(token: String) -> Result<UserInfo, ServerFnError> {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct UserInfo {
     pub username: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct CreditCard {
+    pub id: i64,
+    pub brand: String,
+    pub last4: String,
+    pub credit_limit: i64,
+    pub current_balance: i64,
+    pub nickname: Option<String>,
+}
+
+#[cfg(feature = "ssr")]
+impl From<crate::db::CreditCard> for CreditCard {
+    fn from(db: crate::db::CreditCard) -> Self {
+        CreditCard {
+            id: db.id,
+            brand: db.brand,
+            last4: db.last4,
+            credit_limit: db.credit_limit,
+            current_balance: db.current_balance,
+            nickname: db.nickname,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct UserCards {
+    pub username: String,
+    pub cards: Vec<CreditCard>,
 }
