@@ -98,82 +98,49 @@ fn HomePage() -> impl IntoView {
 //
 // ─────────────────────── Browser-side helpers ───────────────────────
 //
-
-#[cfg(not(feature = "ssr"))]
-fn write_token_to_local_storage(token: &str) {
-    use leptos::logging::log;
-    use leptos::web_sys;
-
-    if let Some(window) = web_sys::window() {
-        match window.local_storage() {
-            Ok(Some(storage)) => {
-                if storage.set_item("token", token).is_err() {
-                    log!("Auth: failed to write token to localStorage");
-                } else {
-                    log!("Auth: token stored in localStorage, len={}", token.len());
-                }
-            }
-            Ok(None) => log!("Auth: localStorage not available"),
-            Err(_) => log!("Auth: error accessing localStorage"),
-        }
-    }
-}
-
-#[cfg(not(feature = "ssr"))]
-fn read_token_from_local_storage() -> Result<String, String> {
-    use leptos::logging::log;
-    use leptos::web_sys;
-
-    let window = web_sys::window().ok_or_else(|| "No window object".to_string())?;
-    let storage = window
-        .local_storage()
-        .map_err(|_| "Error accessing localStorage".to_string())?
-        .ok_or_else(|| "localStorage not available".to_string())?;
-
-    let token = storage
-        .get_item("token")
-        .map_err(|_| "Failed to read token from localStorage".to_string())?
-        .ok_or_else(|| "No token in localStorage".to_string())?;
-
-    log!("Auth: read token from localStorage, len={}", token.len());
-    Ok(token)
-}
-
-#[cfg(not(feature = "ssr"))]
-fn clear_token_from_local_storage() {
-    use leptos::logging::log;
-    use leptos::web_sys;
-
-    if let Some(window) = web_sys::window() {
-        if let Ok(Some(storage)) = window.local_storage() {
-            if storage.remove_item("token").is_ok() {
-                log!("Auth: token removed from localStorage");
-            }
-        }
-    }
-}
-
-#[cfg(not(feature = "ssr"))]
-fn redirect_to(path: &str) {
-    use leptos::web_sys;
-
-    if let Some(window) = web_sys::window() {
-        let _ = window.location().set_href(path);
-    }
-}
-
-#[cfg(not(feature = "ssr"))]
-pub fn logout() {
-    use leptos::logging::log;
-
-    log!("Auth: logout called, removing token and redirecting to /login");
-    clear_token_from_local_storage();
-    redirect_to("/login");
-}
-
 #[cfg(feature = "ssr")]
-pub fn logout() {
-    // No-op on server
+async fn token_from_cookie() -> Result<String, ServerFnError> {
+    use axum_extra::extract::cookie::CookieJar;
+    use leptos_axum::extract;
+
+    // Extract CookieJar from the current request (async)
+    let jar: CookieJar = extract().await?;
+
+    let cookie = jar
+        .get("auth_token")
+        .ok_or_else(|| ServerFnError::new("auth_token cookie not found".to_string()))?;
+
+    Ok(cookie.value().to_string())
+}
+
+#[server(Logout, "/api")]
+pub async fn logout_server() -> Result<(), ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        use cookie::{Cookie, SameSite};
+        use http::header;
+        use leptos::prelude::*;
+        use leptos_axum::ResponseOptions;
+
+        let response = expect_context::<ResponseOptions>();
+
+        // Set the cookie with empty value and Max-Age=0 to expire it
+        let cookie = Cookie::build("auth_token") // name only, empty value
+            .path("/")
+            .http_only(true)
+            .same_site(SameSite::Lax)
+            .max_age(cookie::time::Duration::seconds(0))
+            .build(); // use build(), not finish();
+
+        if let Ok(value) = http::HeaderValue::from_str(&cookie.to_string()) {
+            response.insert_header(header::SET_COOKIE, value);
+        } else {
+            log::error!("Failed to convert logout cookie to HeaderValue");
+            return Err(ServerFnError::new("Internal error clearing cookie"));
+        }
+    }
+
+    Ok(())
 }
 
 //
@@ -206,12 +173,15 @@ fn LoginPage() -> impl IntoView {
             leptos::logging::log!("Login result: {:?}", result.is_ok());
 
             match result {
-                Ok(token) => {
+                Ok(()) => {
                     #[cfg(not(feature = "ssr"))]
                     {
-                        leptos::logging::log!("Login successful, storing token & redirecting");
-                        write_token_to_local_storage(&token);
-                        redirect_to("/dashboard");
+                        leptos::logging::log!("Login successful, redirecting to dashboard");
+                        // cookie is already set by the server; just navigate
+                        use leptos::web_sys;
+                        if let Some(window) = web_sys::window() {
+                            let _ = window.location().set_href("/dashboard");
+                        }
                     }
                 }
                 Err(e) => {
@@ -303,7 +273,10 @@ fn RegisterPage() -> impl IntoView {
                     #[cfg(not(feature = "ssr"))]
                     {
                         leptos::logging::log!("Registration successful, redirecting to login");
-                        redirect_to("/login");
+                        use leptos::web_sys;
+                        if let Some(window) = web_sys::window() {
+                            let _ = window.location().set_href("/login");
+                        }
                     }
                 }
                 Err(e) => {
@@ -375,7 +348,6 @@ fn DashboardPage() -> impl IntoView {
     use leptos::logging::log;
 
     let (username, set_username) = signal(None::<String>);
-    let (token, set_token) = signal(None::<String>);
     let (cards, set_cards) = signal(Vec::<CreditCard>::new());
     let (error, set_error) = signal(None::<String>);
     let (loading, set_loading) = signal(true);
@@ -393,30 +365,16 @@ fn DashboardPage() -> impl IntoView {
     {
         use leptos::task::spawn_local;
 
-        // Initial load: read token, fetch user + cards
         spawn_local({
             let set_username = set_username.clone();
-            let set_token = set_token.clone();
             let set_cards = set_cards.clone();
             let set_error = set_error.clone();
             let set_loading = set_loading.clone();
 
             async move {
-                log!("Dashboard: starting client-side user + cards fetch");
+                log!("Dashboard: starting client-side user + cards fetch (cookie-based)");
 
-                let token_val = match read_token_from_local_storage() {
-                    Ok(t) => t,
-                    Err(msg) => {
-                        log!("Dashboard: token error: {}", msg);
-                        set_error.set(Some(msg));
-                        set_loading.set(false);
-                        return;
-                    }
-                };
-
-                set_token.set(Some(token_val.clone()));
-
-                match get_user_cards(token_val).await {
+                match get_user_cards().await {
                     Ok(UserCards { username, cards }) => {
                         log!(
                             "Dashboard: get_user_cards OK for user {}, {} cards",
@@ -478,17 +436,15 @@ fn DashboardPage() -> impl IntoView {
 
     // Save handler (create or update depending on editing_id)
     let on_save = {
-        let token = token.clone();
-        let cards = cards.clone();
-        let set_cards = set_cards.clone();
-        let set_error = set_error.clone();
-        let set_saving = set_saving.clone();
         let editing_id = editing_id.clone();
         let brand = brand.clone();
         let last4 = last4.clone();
         let credit_limit = credit_limit.clone();
         let current_balance = current_balance.clone();
         let nickname = nickname.clone();
+        let set_cards = set_cards.clone();
+        let set_error = set_error.clone();
+        let set_saving = set_saving.clone();
         let reset_form_for_new = reset_form_for_new.clone();
 
         move |ev: web_sys::SubmitEvent| {
@@ -498,15 +454,9 @@ fn DashboardPage() -> impl IntoView {
             {
                 use leptos::task::spawn_local;
 
-                if token.get().is_none() {
-                    set_error.set(Some("No auth token found.".to_string()));
-                    return;
-                }
-
                 set_saving.set(true);
                 set_error.set(None);
 
-                let token_val = token.get().unwrap();
                 let editing_id_val = editing_id.get();
                 let brand_val = brand.get();
                 let last4_val = last4.get();
@@ -514,7 +464,6 @@ fn DashboardPage() -> impl IntoView {
                 let balance_val = current_balance.get();
                 let nickname_val = nickname.get();
                 let set_cards = set_cards.clone();
-                let cards = cards.clone();
                 let set_error = set_error.clone();
                 let set_saving = set_saving.clone();
                 let reset_form_for_new = reset_form_for_new.clone();
@@ -530,7 +479,6 @@ fn DashboardPage() -> impl IntoView {
 
                     let result = if let Some(id) = editing_id_val {
                         update_card(
-                            token_val.clone(),
                             id,
                             brand_val.clone(),
                             last4_val.clone(),
@@ -541,7 +489,6 @@ fn DashboardPage() -> impl IntoView {
                         .await
                     } else {
                         create_card(
-                            token_val.clone(),
                             brand_val.clone(),
                             last4_val.clone(),
                             credit_limit_i64,
@@ -554,14 +501,12 @@ fn DashboardPage() -> impl IntoView {
                         Ok(card) => {
                             // Merge into local state
                             if let Some(id) = editing_id_val {
-                                // update existing
                                 set_cards.update(|list| {
                                     if let Some(pos) = list.iter().position(|c| c.id == id) {
                                         list[pos] = card.clone();
                                     }
                                 });
                             } else {
-                                // push new
                                 set_cards.update(|list| list.push(card));
                             }
 
@@ -580,9 +525,7 @@ fn DashboardPage() -> impl IntoView {
 
     // Delete handler
     let delete_card_action = {
-        let token = token.clone();
         let set_cards = set_cards.clone();
-        let cards = cards.clone();
         let set_error = set_error.clone();
 
         move |id: i64| {
@@ -590,18 +533,11 @@ fn DashboardPage() -> impl IntoView {
             {
                 use leptos::task::spawn_local;
 
-                if token.get().is_none() {
-                    set_error.set(Some("No auth token found.".to_string()));
-                    return;
-                }
-
-                let token_val = token.get().unwrap();
                 let set_cards = set_cards.clone();
-                let cards = cards.clone();
                 let set_error = set_error.clone();
 
                 spawn_local(async move {
-                    match delete_card(token_val.clone(), id).await {
+                    match delete_card(id).await {
                         Ok(_) => {
                             set_cards.update(|list| {
                                 list.retain(|c| c.id != id);
@@ -638,9 +574,19 @@ fn DashboardPage() -> impl IntoView {
                             let set_username = set_username.clone();
                             let set_error = set_error.clone();
                             move |_| {
-                                set_username.set(None);
-                                set_error.set(Some("You have been logged out.".to_string()));
-                                logout();
+                                leptos::task::spawn_local(async move {
+                                    let _ = logout_server().await; // ignore error for now
+                                    set_username.set(None);
+                                    set_error.set(Some("You have been logged out.".to_string()));
+
+                                    #[cfg(not(feature = "ssr"))]
+                                    {
+                                        use leptos::web_sys;
+                                        if let Some(window) = web_sys::window() {
+                                            let _ = window.location().set_href("/login");
+                                        }
+                                    }
+                                });
                             }
                         }
                     >
@@ -837,38 +783,40 @@ fn DashboardPage() -> impl IntoView {
 //
 
 #[server(GetUserCards, "/api")]
-pub async fn get_user_cards(token: String) -> Result<UserCards, ServerFnError> {
+pub async fn get_user_cards() -> Result<UserCards, ServerFnError> {
     use crate::auth::verify_token;
     use crate::db::{get_db_pool, list_cards_for_user};
 
-    log::info!(
-        "GetUserCards: called, token length {}, will verify & load cards",
-        token.len()
-    );
+    #[cfg(feature = "ssr")]
+    {
+        log::info!("GetUserCards: called, will verify cookie token & load cards");
 
-    let claims =
-        verify_token(&token).map_err(|e| ServerFnError::new(format!("Auth error: {e}")))?;
+        let token = token_from_cookie().await?;
+        let claims =
+            verify_token(&token).map_err(|e| ServerFnError::new(format!("Auth error: {e}")))?;
 
-    let pool = get_db_pool()
-        .await
-        .map_err(|e| ServerFnError::new(format!("Database error: {e}")))?;
+        let pool = get_db_pool()
+            .await
+            .map_err(|e| ServerFnError::new(format!("Database error: {e}")))?;
 
-    let cards_db = list_cards_for_user(&pool, &claims.sub)
-        .await
-        .map_err(|e| ServerFnError::new(format!("Failed to load cards: {e}")))?;
+        let cards_db = list_cards_for_user(&pool, &claims.sub)
+            .await
+            .map_err(|e| ServerFnError::new(format!("Failed to load cards: {e}")))?;
 
-    // Convert Vec<db::CreditCard> -> Vec<CreditCard>
-    let cards = cards_db.into_iter().map(CreditCard::from).collect();
+        let cards = cards_db.into_iter().map(CreditCard::from).collect();
 
-    Ok(UserCards {
-        username: claims.sub,
-        cards,
-    })
+        Ok(UserCards {
+            username: claims.sub,
+            cards,
+        })
+    }
+
+    #[cfg(not(feature = "ssr"))]
+    unreachable!()
 }
 
 #[server(CreateCard, "/api")]
 pub async fn create_card(
-    token: String,
     brand: String,
     last4: String,
     credit_limit: i64,
@@ -877,23 +825,30 @@ pub async fn create_card(
     use crate::auth::verify_token;
     use crate::db::{get_db_pool, insert_card_for_user};
 
-    let claims =
-        verify_token(&token).map_err(|e| ServerFnError::new(format!("Auth error: {e}")))?;
+    #[cfg(feature = "ssr")]
+    {
+        let token = token_from_cookie().await?;
+        let claims =
+            verify_token(&token).map_err(|e| ServerFnError::new(format!("Auth error: {e}")))?;
 
-    let pool = get_db_pool()
-        .await
-        .map_err(|e| ServerFnError::new(format!("Database error: {e}")))?;
+        let pool = get_db_pool()
+            .await
+            .map_err(|e| ServerFnError::new(format!("Database error: {e}")))?;
 
-    let card_db = insert_card_for_user(&pool, &claims.sub, &brand, &last4, credit_limit, nickname)
-        .await
-        .map_err(|e| ServerFnError::new(format!("Failed to create card: {e}")))?;
+        let card_db =
+            insert_card_for_user(&pool, &claims.sub, &brand, &last4, credit_limit, nickname)
+                .await
+                .map_err(|e| ServerFnError::new(format!("Failed to create card: {e}")))?;
 
-    Ok(CreditCard::from(card_db))
+        Ok(CreditCard::from(card_db))
+    }
+
+    #[cfg(not(feature = "ssr"))]
+    unreachable!()
 }
 
 #[server(UpdateCard, "/api")]
 pub async fn update_card(
-    token: String,
     id: i64,
     brand: String,
     last4: String,
@@ -904,46 +859,60 @@ pub async fn update_card(
     use crate::auth::verify_token;
     use crate::db::{get_db_pool, update_card_for_user};
 
-    let claims =
-        verify_token(&token).map_err(|e| ServerFnError::new(format!("Auth error: {e}")))?;
+    #[cfg(feature = "ssr")]
+    {
+        let token = token_from_cookie().await?;
+        let claims =
+            verify_token(&token).map_err(|e| ServerFnError::new(format!("Auth error: {e}")))?;
 
-    let pool = get_db_pool()
+        let pool = get_db_pool()
+            .await
+            .map_err(|e| ServerFnError::new(format!("Database error: {e}")))?;
+
+        let card_db = update_card_for_user(
+            &pool,
+            &claims.sub,
+            id,
+            &brand,
+            &last4,
+            credit_limit,
+            current_balance,
+            nickname,
+        )
         .await
-        .map_err(|e| ServerFnError::new(format!("Database error: {e}")))?;
+        .map_err(|e| ServerFnError::new(format!("Failed to update card: {e}")))?;
 
-    let card_db = update_card_for_user(
-        &pool,
-        &claims.sub,
-        id,
-        &brand,
-        &last4,
-        credit_limit,
-        current_balance,
-        nickname,
-    )
-    .await
-    .map_err(|e| ServerFnError::new(format!("Failed to update card: {e}")))?;
+        Ok(CreditCard::from(card_db))
+    }
 
-    Ok(CreditCard::from(card_db))
+    #[cfg(not(feature = "ssr"))]
+    unreachable!()
 }
 
 #[server(DeleteCard, "/api")]
-pub async fn delete_card(token: String, id: i64) -> Result<(), ServerFnError> {
+pub async fn delete_card(id: i64) -> Result<(), ServerFnError> {
     use crate::auth::verify_token;
     use crate::db::{delete_card_for_user, get_db_pool};
 
-    let claims =
-        verify_token(&token).map_err(|e| ServerFnError::new(format!("Auth error: {e}")))?;
+    #[cfg(feature = "ssr")]
+    {
+        let token = token_from_cookie().await?;
+        let claims =
+            verify_token(&token).map_err(|e| ServerFnError::new(format!("Auth error: {e}")))?;
 
-    let pool = get_db_pool()
-        .await
-        .map_err(|e| ServerFnError::new(format!("Database error: {e}")))?;
+        let pool = get_db_pool()
+            .await
+            .map_err(|e| ServerFnError::new(format!("Database error: {e}")))?;
 
-    delete_card_for_user(&pool, &claims.sub, id)
-        .await
-        .map_err(|e| ServerFnError::new(format!("Failed to delete card: {e}")))?;
+        delete_card_for_user(&pool, &claims.sub, id)
+            .await
+            .map_err(|e| ServerFnError::new(format!("Failed to delete card: {e}")))?;
 
-    Ok(())
+        Ok(())
+    }
+
+    #[cfg(not(feature = "ssr"))]
+    unreachable!()
 }
 
 //
@@ -951,7 +920,7 @@ pub async fn delete_card(token: String, id: i64) -> Result<(), ServerFnError> {
 //
 
 #[server(Login, "/api")]
-pub async fn login(username: String, password: String) -> Result<String, ServerFnError> {
+pub async fn login(username: String, password: String) -> Result<(), ServerFnError> {
     use crate::auth::authenticate_user;
     use crate::db::get_db_pool;
 
@@ -969,7 +938,33 @@ pub async fn login(username: String, password: String) -> Result<String, ServerF
         })?;
 
     log::info!("Login successful for user: {}", username);
-    Ok(token)
+
+    // --- NEW: set HttpOnly cookie (SSR only) ---
+    #[cfg(feature = "ssr")]
+    {
+        use cookie::{Cookie, SameSite};
+        use http::header;
+        use leptos::prelude::*;
+        use leptos_axum::ResponseOptions;
+
+        let response = expect_context::<ResponseOptions>();
+
+        let cookie = Cookie::build(("auth_token", token))
+            .path("/") // send on all paths
+            .http_only(true) // JS can't read it
+            .same_site(SameSite::Lax)
+            .secure(false) // TODO: set to true in HTTPS/prod
+            .build();
+
+        if let Ok(value) = http::HeaderValue::from_str(&cookie.to_string()) {
+            response.insert_header(header::SET_COOKIE, value);
+        } else {
+            log::error!("Failed to convert auth cookie to HeaderValue");
+            return Err(ServerFnError::new("Internal error setting cookie"));
+        }
+    }
+
+    Ok(())
 }
 
 #[server(Register, "/api")]
@@ -995,23 +990,30 @@ pub async fn register(username: String, password: String) -> Result<(), ServerFn
 }
 
 #[server(GetUserInfo, "/api")]
-pub async fn get_user_info(token: String) -> Result<UserInfo, ServerFnError> {
+pub async fn get_user_info() -> Result<UserInfo, ServerFnError> {
     use crate::auth::verify_token;
 
-    log::info!("GetUserInfo: called with token length {}", token.len());
+    #[cfg(feature = "ssr")]
+    {
+        let token = token_from_cookie().await?;
+        log::info!("GetUserInfo: called with cookie token");
 
-    match verify_token(&token) {
-        Ok(claims) => {
-            log::info!("GetUserInfo: token valid for user {}", claims.sub);
-            Ok(UserInfo {
-                username: claims.sub,
-            })
-        }
-        Err(e) => {
-            log::warn!("GetUserInfo: verify_token failed: {}", e);
-            Err(ServerFnError::new(e))
+        match verify_token(&token) {
+            Ok(claims) => {
+                log::info!("GetUserInfo: token valid for user {}", claims.sub);
+                Ok(UserInfo {
+                    username: claims.sub,
+                })
+            }
+            Err(e) => {
+                log::warn!("GetUserInfo: verify_token failed: {}", e);
+                Err(ServerFnError::new(e))
+            }
         }
     }
+
+    #[cfg(not(feature = "ssr"))]
+    unreachable!()
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
