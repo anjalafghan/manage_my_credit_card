@@ -37,6 +37,7 @@ log = "0.4"
 web-sys = { version = "0.3", features = ["Window", "Storage", "Location"] }
 cookie = "0.18.1"
 axum-extra = { version = "0.12.2", features = ["cookie"] }
+dotenvy = "0.15.7"
 
 
 [features]
