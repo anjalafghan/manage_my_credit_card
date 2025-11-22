@@ -20,6 +20,9 @@ use tower_http::services::ServeDir;
 #[cfg(feature = "ssr")]
 #[tokio::main]
 async fn main() {
+    #[cfg(feature = "ssr")]
+    dotenvy::dotenv().ok();
+
     simple_logger::SimpleLogger::new()
         .with_level(log::LevelFilter::Info)
         .init()
